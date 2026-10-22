@@ -79,7 +79,7 @@ Done when every stream in every plan is registered, `basedpyright` is clean per 
 
 - Run the suite (`uv run --group dev pytest`, output to a file, read the file). Docs-only run: spec and discover snapshots are the suite; the capture test is added when credentials arrive.
 - **Lint:** once the suite passes, run `uvx ruff@0.16.9 check source-$1/` from the repo root (output to a file and read it). Fix findings in code this session wrote; report pre-existing ones to the user without fixing them.
-- Confirm the discover snapshot lists every stream; note quiet streams legitimately absent from the capture snapshot.
+- Confirm the discover snapshot lists every stream the test token can access; note quiet streams legitimately absent from the capture snapshot.
 - Release requirements per [`release.md`](release.md): CI registration, `CHANGELOG.md`, docs page.
 - `git diff --stat` scoped to the new connector; an unrelated CDK schema sweep is its own commit (`GATE-COMMIT-SPLIT`).
 - **Autonomous mode**: dispatch `pr-review-toolkit:code-reviewer` over the full diff, telling it to read `.claude/shared/rules-index.md` first, and fix what it finds. This stands in for the eyes a human-in-the-loop user had on each plan.
