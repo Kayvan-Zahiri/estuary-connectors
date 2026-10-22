@@ -310,6 +310,46 @@ jobs:
           "$VIRTUAL_ENV/bin/python" -m compileall -q estuary_cdk vendor
           "$VIRTUAL_ENV/bin/python" -m pytest
 
+      # Everything above installs the `airbyte-shim` extra, because the test
+      # suite exercises the shim. Consumers outside this repository install
+      # the published wheel and nothing else, so an `import airbyte_cdk` that
+      # reached module scope in estuary_cdk would break every one of them
+      # while leaving this whole workflow green -- the vendored fork is on the
+      # path for all 69 connectors. Nothing else can catch that: `compileall`
+      # only parses, and a workspace install always carries `vendor/`.
+      #
+      # So: build the wheel, install it alone, and import what it ships.
+      # `shim_airbyte_cdk` is the one module exempt -- importing the shim
+      # without the shim installed is expected to fail.
+      - name: Imports without the vendored Airbyte fork
+        run: |
+          uv build --package estuary_cdk --wheel --out-dir /tmp/cdk-pure-dist
+          uv venv --python ${{ matrix.python-version }} /tmp/cdk-pure-venv
+          VIRTUAL_ENV=/tmp/cdk-pure-venv uv pip install /tmp/cdk-pure-dist/*.whl
+          /tmp/cdk-pure-venv/bin/python - <<'PY'
+          import importlib, importlib.util, pkgutil, sys
+          import estuary_cdk
+
+          failed = []
+          names = sorted(m.name for m in pkgutil.iter_modules(estuary_cdk.__path__))
+          for name in names:
+              if name == "shim_airbyte_cdk":
+                  continue
+              try:
+                  importlib.import_module(f"estuary_cdk.{name}")
+              except Exception as exc:
+                  failed.append(f"estuary_cdk.{name}: {type(exc).__name__}: {exc}")
+
+          for found in ("airbyte_cdk", "airbyte_protocol"):
+              if importlib.util.find_spec(found) is not None:
+                  failed.append(f"{found} is importable; the wheel is not the pure CDK")
+
+          print(f"swept {len(names) - 1} modules")
+          for line in failed:
+              print(f"::error::{line}")
+          sys.exit(1 if failed else 0)
+          PY
+
   # One status check covering every job above, whichever connectors ran and
   # whether or not estuary-cdk's checks did, so it can be made a required
   # check. It must run with `always()`: GitHub counts a skipped job as passing
