@@ -15,6 +15,37 @@ The CDK is designed for modern Python, which means:
 The rough architecture of the CDK is a framework, which calls a user-developed connector, which optionally calls "common" components that solve problems common to many connectors.
 The "framework" portion of the CDK tries to be as un-opinionated as possible, allowing any kind of connector use case, while common components are opinionated to reduce boilerplate and repetition across connectors.
 
+## Depending on the CDK from another repository
+
+Connectors in this repository get the CDK as a uv workspace member and need nothing else.
+Projects outside it install a prebuilt wheel, published from every push to `main` that
+changes `estuary-cdk/`:
+
+```toml
+[tool.uv.sources]
+estuary-cdk = { url = "https://github.com/estuary/connectors/releases/download/cdk-dev/estuary_cdk-<version>-py3-none-any.whl" }
+```
+
+The current version and a ready-to-paste snippet are at the top of the
+[`cdk-dev` release](https://github.com/estuary/connectors/releases/tag/cdk-dev). Take them
+from there rather than from the asset list below it, which GitHub orders alphabetically —
+and `.post9` sorts after `.post47`.
+
+A few things worth knowing:
+
+- **Versions look like `0.2.0.post47+g1a2b3c4`.** The base comes from this directory's
+  `pyproject.toml`, the offset and commit from `git describe`. The local segment means a
+  wheel from this channel can never be confused with, or uploaded as, a release.
+- **Pin a specific wheel; don't try to float.** Each URL is immutable and kept forever, and
+  `uv.lock` records its hash. There is deliberately no "latest" URL: a stable URL serving
+  changing bytes leaves an already-populated environment silently holding the old build,
+  because uv treats a package as satisfied by name and version alone.
+- **Upgrade by editing the URL**, then re-locking.
+- **The `airbyte-shim` extra will not resolve.** It pulls in `estuary-cdk-airbyte-shim`,
+  the vendored Airbyte fork under `vendor/`, which is not published — external consumers
+  want the pure CDK, and `airbyte_cdk` as a top-level package would collide with the real
+  one. Everything except `estuary_cdk.shim_airbyte_cdk` imports without it.
+
 ## Canonical Layout of a Connector
 
 A canonical connector consists of:

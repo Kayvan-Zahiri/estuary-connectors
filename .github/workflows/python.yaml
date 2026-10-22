@@ -380,3 +380,143 @@ jobs:
           if [ "$CDK" = true ] && { [ "$CDK_TESTS" != success ] || [ "$CDK_PYTHONS" != success ]; }; then
             echo "::error::estuary-cdk was due to be checked but its jobs ended $CDK_TESTS and $CDK_PYTHONS"; exit 1
           fi
+
+  # Publish an estuary-cdk wheel to the rolling `cdk-dev` prerelease, so that
+  # projects outside this repository can depend on the CDK without fetching
+  # the whole repository. A tarball of the repo is ~9.6 MB and has to be built
+  # by the consumer; the wheel is ~75 KB and is not.
+  #
+  # Deliberately absent from `python_gate`'s needs: it publishes rather than
+  # checks, runs only on main, and a required check must not wait on it.
+  estuary_cdk_publish:
+    name: estuary-cdk publish
+    needs: [classify_changes, estuary_cdk, estuary_cdk_supported_pythons]
+    # `github.event_name == 'push'` is load-bearing. classify-changes reports
+    # cdk=true unconditionally for schedule and workflow_dispatch runs, which
+    # exist to rebuild everything -- so without this the nightly run would
+    # mint a new version of unchanged code every morning.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.classify_changes.outputs.cdk == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      # Creating the release and uploading to it. Every other job in this
+      # workflow is read-only, so this stays scoped to the one that writes.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `git describe` needs history and tags; the default checkout has
+          # neither, and would fail outright.
+          fetch-depth: 0
+          fetch-tags: true
+
+      # `cdk` is broader than a wheel needs: it also fires for the workspace
+      # lock, python.yaml, the connector list and the shared ruff config,
+      # because estuary-cdk's *checks* must run for all of those. The wheel is
+      # built from estuary-cdk/ alone, so publishing on the rest would mint a
+      # new version for byte-identical code -- 22 of 70 qualifying commits,
+      # measured over 180 days of main.
+      - id: scope
+        name: Did estuary-cdk/ actually change?
+        run: |
+          BEFORE='${{ github.event.before }}'
+          # A branch's first push reports an all-zero `before`, and a force
+          # push can name a commit this checkout does not have. Publish in
+          # either case rather than skipping on a comparison we cannot make.
+          if [ -z "${BEFORE//0/}" ] || ! git cat-file -e "${BEFORE}^{commit}" 2> /dev/null; then
+            echo "no usable 'before' commit; publishing"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "${BEFORE}" "${GITHUB_SHA}" -- estuary-cdk/; then
+            echo "estuary-cdk/ unchanged in ${BEFORE}..${GITHUB_SHA}; nothing to publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.scope.outputs.publish == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.13.3"
+          enable-cache: true
+
+      # Stamping has to come after every `--locked` step in the workflow: it
+      # puts the manifest out of step with uv.lock, which `uv sync --locked`
+      # and `uv lock --check` both reject. `uv build` and `--frozen` do not,
+      # and this job runs neither of the former.
+      - id: build
+        if: steps.scope.outputs.publish == 'true'
+        name: Build the wheel
+        run: |
+          VERSION=$(.github/scripts/cdk-release-version.sh)
+          echo "version: ${VERSION}"
+          python3 - "$VERSION" <<'PY'
+          import re, sys
+          version = sys.argv[1]
+          path = "estuary-cdk/pyproject.toml"
+          with open(path) as f:
+              text = f.read()
+          text, count = re.subn(
+              r'(?m)^version = "[^"]+"$', f'version = "{version}"', text, count=1
+          )
+          assert count == 1, f"expected one version line in {path}, replaced {count}"
+          with open(path, "w") as f:
+              f.write(text)
+          PY
+          uv build --package estuary_cdk --wheel --out-dir dist
+          WHEEL=$(cd dist && ls ./*.whl | sed 's|^\./||')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "wheel=${WHEEL}" >> "$GITHUB_OUTPUT"
+
+      # Assets are never deleted: a consumer pins a URL, so removing one
+      # breaks their build. ~8 wheels a month at ~75 KB costs nothing to keep
+      # forever, and the release body below is what readers actually use --
+      # GitHub orders the asset list alphabetically, which for unpadded
+      # `.postN` offsets is not chronological.
+      - name: Upload to the cdk-dev release
+        if: steps.scope.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.build.outputs.version }}
+          WHEEL: ${{ steps.build.outputs.wheel }}
+        run: |
+          # GitHub keeps `+` in an asset's name but percent-encodes it in the
+          # download URL, so the two differ and the snippet must carry %2B.
+          URL="${{ github.server_url }}/${{ github.repository }}/releases/download/cdk-dev/${WHEEL//+/%2B}"
+
+          cat > /tmp/notes.md <<EOF
+          Development builds of \`estuary-cdk\`, published from every push to \`main\`
+          that changes \`estuary-cdk/\`. These are not releases: each carries a local
+          version segment naming the commit it was built from.
+
+          ### Current
+
+          \`${VERSION}\`
+
+          \`\`\`toml
+          [tool.uv.sources]
+          estuary-cdk = { url = "${URL}" }
+          \`\`\`
+
+          Built from ${{ github.server_url }}/${{ github.repository }}/commit/${GITHUB_SHA}.
+
+          Earlier wheels are listed below and are kept indefinitely so that existing
+          pins keep resolving. The \`airbyte-shim\` extra is not published here and
+          will not resolve outside this repository.
+          EOF
+
+          # `--clobber` rather than failing on a name that exists: re-running
+          # this job rebuilds byte-identical bytes (hatchling wheels are
+          # reproducible), so overwriting is a no-op and erroring is noise.
+          if gh release view cdk-dev > /dev/null 2>&1; then
+            gh release upload cdk-dev "dist/${WHEEL}" --clobber
+            gh release edit cdk-dev --notes-file /tmp/notes.md
+          else
+            gh release create cdk-dev "dist/${WHEEL}" \
+              --prerelease \
+              --title "estuary-cdk development builds" \
+              --notes-file /tmp/notes.md \
+              --target "${GITHUB_SHA}"
+          fi
