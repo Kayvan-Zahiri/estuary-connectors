@@ -5,11 +5,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Write|Edit",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/permission-gate.py",
+            "command": "hook=\"$CLAUDE_PROJECT_DIR/.claude/hooks/permission-gate.py\"; command -v python3 >/dev/null && exec python3 \"$hook\"; echo 'permission-gate.py needs python3, so every Bash, Write and Edit call is blocked until it is installed.' >&2; exit 2",
             "timeout": 15
           }
         ]

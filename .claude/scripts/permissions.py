@@ -7,10 +7,12 @@ one connector, for one run, and is what `.claude/hooks/permission-gate.py`
 checks before any live provider call. Only the orchestrating skill runs this,
 and only from the user's live answers.
 
-  permissions.py grant  <connector> --mode human-in-the-loop|autonomous --seeding assistant|user|none
-  permissions.py stamp  <connector>    # after the credential checkpoint: binds the permission to
-                                       # the committed config.yaml (refuses if it is dirty/untracked)
+  permissions.py set    <connector> --mode human-in-the-loop|autonomous --seeding assistant|user|none [--stamp]
   permissions.py revoke <connector>    # at hand-off
+
+`set` records the answers and keeps any existing stamp. `--stamp`, after the user confirms the
+committed config.yaml at the credential checkpoint, also binds the permission to that file's
+sha256 (refused while it is untracked or modified).
 """
 
 import argparse
@@ -25,12 +27,13 @@ ROOT = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
 class Args(argparse.Namespace):
-    """The parsed command line; `mode` and `seeding` are set only for `grant`."""
+    """The parsed command line; `mode`, `seeding` and `stamp` are set only for `set`."""
 
     cmd: str = ""
     connector_slug: str = ""
     mode: str = ""
     seeding: str = ""
+    stamp: bool = False
 
 
 def path(connector_slug: str) -> str:
@@ -47,9 +50,10 @@ def path(connector_slug: str) -> str:
 
 
 def load(connector_slug: str) -> dict[str, str]:
+    """The existing permissions file, or {} when there is none yet."""
     p = path(connector_slug)
     if not os.path.isfile(p):
-        sys.exit(f"no permissions file for {connector_slug}; run `grant` first")
+        return {}
     with open(p) as fh:
         return cast(dict[str, str], json.load(fh))
 
@@ -63,16 +67,20 @@ def save(connector_slug: str, data: dict[str, str]) -> None:
     print(f"{p}: {json.dumps(data)}")
 
 
-def grant(args: Args) -> None:
-    save(args.connector_slug, {"mode": args.mode, "seeding": args.seeding})
-
-
-def stamp(args: Args) -> None:
+def set_permissions(args: Args) -> None:
     data = load(args.connector_slug)
-    cdir = os.path.join(ROOT, args.connector_slug)
+    data.update(mode=args.mode, seeding=args.seeding)
+    if args.stamp:
+        data["config_sha256"] = config_sha256(args.connector_slug)
+    save(args.connector_slug, data)
+
+
+def config_sha256(connector_slug: str) -> str:
+    """The committed config.yaml's sha256; exits while it is untracked or modified."""
+    cdir = os.path.join(ROOT, connector_slug)
     cfg = os.path.join(cdir, "config.yaml")
     if not os.path.isfile(cfg):
-        sys.exit(f"{args.connector_slug}/config.yaml does not exist")
+        sys.exit(f"{connector_slug}/config.yaml does not exist")
     ls_files = subprocess.run(
         ["git", "-C", cdir, "ls-files", "--error-unmatch", "config.yaml"],
         capture_output=True,
@@ -86,13 +94,12 @@ def stamp(args: Args) -> None:
     if not tracked or status:
         sys.exit(
             (
-                f"{args.connector_slug}/config.yaml is {'untracked' if not tracked else 'modified'}; "
+                f"{connector_slug}/config.yaml is {'untracked' if not tracked else 'modified'}; "
                 "the user must commit it before permission can be bound to it"
             )
         )
     with open(cfg, "rb") as fh:
-        data["config_sha256"] = hashlib.sha256(fh.read()).hexdigest()
-    save(args.connector_slug, data)
+        return hashlib.sha256(fh.read()).hexdigest()
 
 
 def revoke(args: Args) -> None:
@@ -108,23 +115,25 @@ def main() -> None:
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    g = sub.add_parser("grant")
-    _ = g.add_argument("connector_slug", metavar="connector")
-    _ = g.add_argument(
+    s = sub.add_parser("set")
+    _ = s.add_argument("connector_slug", metavar="connector")
+    _ = s.add_argument(
         "--mode", required=True, choices=["human-in-the-loop", "autonomous"]
     )
-    _ = g.add_argument(
+    _ = s.add_argument(
         "--seeding", required=True, choices=["assistant", "user", "none"]
     )
-
-    s = sub.add_parser("stamp")
-    _ = s.add_argument("connector_slug", metavar="connector")
+    _ = s.add_argument(
+        "--stamp",
+        action="store_true",
+        help="also bind the permission to the committed config.yaml",
+    )
 
     r = sub.add_parser("revoke")
     _ = r.add_argument("connector_slug", metavar="connector")
 
     args = ap.parse_args(namespace=Args())
-    handlers = {"grant": grant, "stamp": stamp, "revoke": revoke}
+    handlers = {"set": set_permissions, "revoke": revoke}
     handlers[args.cmd](args)
 
 

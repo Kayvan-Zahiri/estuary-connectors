@@ -18,7 +18,7 @@ Build `source-$1` covering the streams the user listed. You are the **orchestrat
 
 ## Phase 0 — Intake
 
-- **Resolve the work mode** per `work-mode.md` § Resolving the mode: a flag in the prompt answers the mode question; the questionnaire always asks the seeding question. Record both: `python3 .claude/scripts/permissions.py grant source-$1 --mode <m> --seeding <s>` (`CONDUCT-PERMISSIONS-FILE`).
+- **Resolve the work mode** per `work-mode.md` § Resolving the mode: a flag in the prompt answers the mode question; the questionnaire always asks the seeding question. Record both: `python3 .claude/scripts/permissions.py set source-$1 --mode <m> --seeding <s>` (`CONDUCT-PERMISSIONS-FILE`).
 - Read the connector name and the **stream list**: the remaining positional arguments, or names in the prompt's prose. Missing or vague → `GATE-STREAM-LIST`.
 - Confirm `source-$1` does not exist (`ls source-$1`). If it does, stop: this is a creation skill.
 - Open the TODO list (`CONDUCT-TODO-LIST`): one item per phase, plus one per cluster once Phase 1 settles them.
@@ -45,8 +45,8 @@ Run `configure-auth` for `source-$1` inline, in your own context: it holds `GATE
 
 Resolve per the gate table; in autonomous mode this is the batched checkpoint, carrying every decision so far (stream list, clusters, auth scheme, managed-OAuth dependency, `GATE-TIGHT-BUDGET` plan, seeding answer). Orchestrator mechanics around it:
 
-- **Commit before fan-out.** The worktrees Phase 5 creates branch from HEAD, and `stamp` refuses an uncommitted `config.yaml`. Ask the user to commit the skeleton and auth wiring together with the encrypted config, or to confirm you may (`CONDUCT-CONFIRM-BEFORE-WRITE-HISTORY`).
-- **Stamp**: `python3 .claude/scripts/permissions.py stamp source-$1` once they confirm. A later re-commit of `config.yaml` means re-confirm and stamp again (`GATE-CONFIG-DIRTY`).
+- **Commit before fan-out.** The worktrees Phase 5 creates branch from HEAD, and `--stamp` refuses an uncommitted `config.yaml`. Ask the user to commit the skeleton and auth wiring together with the encrypted config, or to confirm you may (`CONDUCT-CONFIRM-BEFORE-WRITE-HISTORY`).
+- **Stamp**: `python3 .claude/scripts/permissions.py set source-$1 --mode <m> --seeding <s> --stamp` once they confirm, with the recorded answers. A later re-commit of `config.yaml` means re-confirm and stamp again (`GATE-CONFIG-DIRTY`).
 - **"No credentials"** starts a docs-only run: every brief says so, plans arrive PENDING, and Phase 8 takes its docs-only branch.
 
 ## Phase 5 — Fan out stream-builders

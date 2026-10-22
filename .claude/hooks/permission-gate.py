@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook (Bash): mechanical enforcement of the provider-API gates.
+"""PreToolUse hook (Bash, Write, Edit): mechanical enforcement of the provider-API gates.
 
 The rules live in `.claude/shared/provider-api-consent.md`; this hook enforces the ones a
 shell command reveals, so no skill has to restate them and no session has to be trusted:
@@ -14,15 +14,21 @@ shell command reveals, so no skill has to restate them and no session has to be 
   API-ROUTE-THROUGH-BRUNO  mutating `curl` / HTTPie are refused outright, and so is a Bruno run
                            not started as `bru run` (npx, `env`, `node …/bru.js`, …), which the
                            checks above could not see
+  CONDUCT-PERMISSIONS-FILE every `permissions.py set` asks the user, even in auto mode, so they
+                           approve the exact flags recorded; Write/Edit never touch the
+                           permissions file, nor a config.yaml git tracks
 
 Permissions file: `<git common dir>/claude-permissions/<connector>.json`,
 shared by every worktree of the repo and managed only through
-`.claude/scripts/permissions.py` (grant / stamp / revoke) by the orchestrating
+`.claude/scripts/permissions.py` (set / revoke) by the orchestrating
 skill.
 Shape: {"mode": "human-in-the-loop"|"autonomous", "seeding": "assistant"|"user"|"none",
-"config_sha256": "<sha256 of <connector>/config.yaml>" (added by `stamp`)}.
+"config_sha256": "<sha256 of <connector>/config.yaml>" (added by `set --stamp`)}.
 
-Deny-only by design: the hook emits `deny` (or `ask` in human-in-the-loop mode) and is otherwise
+Fails closed: when Python is missing or this hook raises, it exits 2, which blocks every call it
+covers.
+
+Deny-only by design: the hook emits `deny` or `ask` and is otherwise
 silent. Project hooks run before the workspace-trust dialog, so a hook that could *grant*
 would be unsafe to ship in a repo; one that can only refuse is not. Every denial message
 says what to do instead — that text is the instruction, delivered at the moment it applies,
@@ -72,6 +78,10 @@ NEVER_WRITE = (
     "(CONDUCT-PERMISSIONS-FILE). Human-in-the-loop: surface it to the user. Autonomous: mark the "
     "affected findings PENDING, note it in the decision ledger, and carry on with what needs no API."
 )
+
+SHELL_SEPARATOR_CHARS = ";&|\n"
+# Commands this hook checks once `uv run` / `poetry run` is stripped.
+GATED_TOOLS = {"bru", "flowctl", "pytest"}
 
 
 def decide(decision: Literal["deny", "ask"], reason: str) -> NoReturn:
@@ -133,20 +143,34 @@ def read_permissions(connector_slug: str) -> Permissions | None:
 
 
 def split_segments(command: str) -> list[list[str]]:
-    """Split a shell command on && ; || | and newlines, keeping each segment's tokens."""
+    """Split a shell command on && ; || | & and newlines, keeping each segment's tokens.
+
+    Separators split with or without spaces around them; quoted text stays one token:
+
+        cd source-x/bruno&&bru run list.bru  ->  [cd, source-x/bruno], [bru, run, list.bru]
+        cd source-x/bruno<newline>bru run x  ->  [cd, source-x/bruno], [bru, run, x]
+        bru run x 2>&1 | tee out.log         ->  [bru, run, x, 2>], [1], [tee, out.log]
+        echo 'a;b'                           ->  [echo, a;b]
+    """
     segments: list[list[str]] = []
     current: list[str] = []
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_SEPARATOR_CHARS)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = list(lexer)
     except ValueError:
         return [command.split()]
     for tok in tokens:
-        if tok in ("&&", ";", "||", "|"):
+        if all(c in SHELL_SEPARATOR_CHARS for c in tok):
             segments.append(current)
             current = []
         else:
             current.append(tok)
+
     segments.append(current)
+
     return [s for s in segments if s]
 
 
@@ -264,26 +288,53 @@ def request_methods(target: str) -> dict[str, str]:
     return methods
 
 
+def is_tracked(path: str) -> bool:
+    return (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                os.path.dirname(path),
+                "ls-files",
+                "--error-unmatch",
+                os.path.basename(path),
+            ],
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 0
+    )
+
+
+def check_file_write(path: str) -> None:
+    """Write/Edit: the permissions file and a tracked config.yaml belong to the user."""
+    if os.path.basename(
+        os.path.dirname(path)
+    ) == "claude-permissions" and path.endswith(".json"):
+        decide(
+            "deny",
+            f"CONDUCT-PERMISSIONS-FILE: the permissions file changes only through `permissions.py set` / `revoke`. {NEVER_WRITE}",
+        )
+    if (
+        os.path.basename(path) == "config.yaml"
+        and find_connector_dir(path) == os.path.dirname(path)
+        and is_tracked(path)
+    ):
+        decide(
+            "deny",
+            (
+                "API-CONFIG-GATE: this config.yaml holds the connector's credentials and git tracks it, so only the "
+                f"user edits it (with `sops`). {NEVER_WRITE}"
+            ),
+        )
+
+
 def config_dirty(connector_dir: str) -> tuple[bool, str | None]:
     cfg = os.path.join(connector_dir, "config.yaml")
     if not os.path.isfile(cfg):
         return False, None
     try:
-        tracked = (
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    connector_dir,
-                    "ls-files",
-                    "--error-unmatch",
-                    "config.yaml",
-                ],
-                capture_output=True,
-                text=True,
-            ).returncode
-            == 0
-        )
+        tracked = is_tracked(cfg)
         status = subprocess.run(
             ["git", "-C", connector_dir, "status", "--porcelain", "--", "config.yaml"],
             capture_output=True,
@@ -330,7 +381,7 @@ def check_credentials(
             (
                 f"API-CONFIG-GATE: {connector_slug}/config.yaml no longer matches the credentials the user gave permission "
                 f"for (permissions file {bound[:12]}…, config.yaml {current[:12]}…). No live call runs until the user "
-                f"re-confirms and the orchestrator re-runs `permissions.py stamp {connector_slug}`. {NEVER_WRITE}"
+                f"re-confirms and the orchestrator re-runs `permissions.py set {connector_slug} … --stamp`. {NEVER_WRITE}"
             ),
         )
     return consent, bound, current
@@ -370,7 +421,7 @@ def handle_bru_run(tokens: list[str], cwd: str) -> None:
     if consent is None:
         state = (
             f"there is no permissions file at {permissions_path(connector_slug) or '<git common dir>/claude-permissions/'} "
-            "(the orchestrator has not run `permissions.py grant`; a planner reports this to the orchestrator)"
+            "(the orchestrator has not run `permissions.py set`; a planner reports this to the orchestrator)"
         )
     elif consent.get("seeding") != "assistant":
         state = (
@@ -409,25 +460,48 @@ def str_field(obj: object, key: str) -> str:
 
 
 def main() -> None:
-    try:
-        payload = cast(object, json.load(sys.stdin))
-    except json.JSONDecodeError:
-        return
-    if str_field(payload, "tool_name") != "Bash":
-        return
+    payload = cast(object, json.load(sys.stdin))
+    tool = str_field(payload, "tool_name")
     tool_input = cast(dict[str, object], payload).get("tool_input")
-    command = str_field(tool_input, "command")
     cwd = str_field(payload, "cwd") or os.getcwd()
+    if tool in ("Write", "Edit"):
+        path = str_field(tool_input, "file_path")
+        check_file_write(os.path.abspath(os.path.join(cwd, path)))
+        return
+    if tool != "Bash":
+        return
+    command = str_field(tool_input, "command")
 
     for seg in split_segments(command):
         # Track `cd <dir>` so `cd source-x/bruno && bru run …` resolves against the right directory.
         if seg[0] == "cd" and len(seg) > 1:
             cwd = os.path.abspath(os.path.join(cwd, os.path.expanduser(seg[1])))
             continue
-        if seg[:2] == ["poetry", "run"]:
-            seg = seg[2:]
+
+        for i, t in enumerate(seg[:-1]):
+            if os.path.basename(t) == "permissions.py" and seg[i + 1] == "set":
+                decide(
+                    "ask",
+                    (
+                        f"CONDUCT-PERMISSIONS-FILE: `{' '.join(seg[i + 1 :])}` records the user's answers in the "
+                        "permissions file. Approve only if these flags match what the user said."
+                    ),
+                )
+
+        if seg[:2] in (["uv", "run"], ["poetry", "run"]):
+            # `uv run --group dev pytest`: options come first, so the command starts at the
+            # first tool this hook checks.
+            seg = next(
+                (
+                    seg[i:]
+                    for i in range(2, len(seg))
+                    if os.path.basename(seg[i]) in GATED_TOOLS
+                ),
+                seg[2:],
+            )
         if not seg:
             continue
+
         head = os.path.basename(seg[0])
         if head == "curl" and curl_is_mutation(seg):
             decide(
@@ -437,11 +511,13 @@ def main() -> None:
                     "Author the request under the connector's bruno/Seeding/ folder instead."
                 ),
             )
+
         if head in ("http", "https", "xh") and httpie_is_mutation(seg):
             decide(
                 "deny",
                 "API-ROUTE-THROUGH-BRUNO: mutating HTTPie call refused; author it under bruno/Seeding/ instead.",
             )
+
         if head == "bru" and len(seg) > 1 and seg[1] == "run":
             handle_bru_run(seg, cwd)
         elif is_wrapped_bru_run(seg):
@@ -452,6 +528,7 @@ def main() -> None:
                     "hook can check the run's requests and config.yaml. Pass variables with `--env-var`."
                 ),
             )
+
         if (
             head == "flowctl"
             and len(seg) > 2
@@ -464,4 +541,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        # Fail closed: exit 2 blocks the tool call, so a broken hook stops every call instead
+        # of silently dropping every gate.
+        print(
+            f"permission-gate.py failed ({exc!r}), so every Bash, Write and Edit call is blocked until it is fixed.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
