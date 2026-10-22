@@ -17,6 +17,10 @@
 [tool.uv.workspace]
 members = [
     "estuary-cdk",
+    # The vendored Airbyte fork, which estuary-cdk's `airbyte-shim` extra
+    # pulls in. A member of its own so that estuary-cdk's published wheel
+    # carries `estuary_cdk` alone; see estuary-cdk/vendor/pyproject.toml.
+    "estuary-cdk/vendor",
     "source-ada",
     "source-aircall-native",
     "source-airtable",

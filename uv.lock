@@ -5,6 +5,7 @@ requires-python = "==3.14.*"
 [manifest]
 members = [
     "estuary-cdk",
+    "estuary-cdk-airbyte-shim",
     "source-ada",
     "source-aircall-native",
     "source-airtable",
@@ -559,14 +560,7 @@ dependencies = [
 
 [package.optional-dependencies]
 airbyte-shim = [
-    { name = "backoff" },
-    { name = "dpath" },
-    { name = "jsonref" },
-    { name = "jsonschema" },
-    { name = "pendulum" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "requests-cache" },
+    { name = "estuary-cdk-airbyte-shim" },
 ]
 
 [package.metadata]
@@ -574,24 +568,46 @@ requires-dist = [
     { name = "aiocsv", specifier = ">=1.3.2,<2.0.0" },
     { name = "aiodns", specifier = ">=4.0.4,<5.0.0" },
     { name = "aiohttp", specifier = ">=3.14.3,<4.0.0" },
-    { name = "backoff", marker = "extra == 'airbyte-shim'" },
-    { name = "dpath", marker = "extra == 'airbyte-shim'", specifier = ">=2.1,<3.0" },
+    { name = "estuary-cdk-airbyte-shim", marker = "extra == 'airbyte-shim'", editable = "estuary-cdk/vendor" },
     { name = "google-auth", extras = ["requests"], specifier = ">=2.40.3" },
     { name = "ijson", specifier = ">=3.3.0,<4.0.0" },
-    { name = "jsonref", marker = "extra == 'airbyte-shim'", specifier = ">=1.1,<2.0" },
-    { name = "jsonschema", marker = "extra == 'airbyte-shim'", specifier = ">=4,<5" },
     { name = "orjson", specifier = ">=3.11.6,<4.0.0" },
-    { name = "pendulum", marker = "extra == 'airbyte-shim'", specifier = ">=3,<4" },
     { name = "pycron", specifier = ">=3.1.2,<4.0.0" },
     { name = "pydantic", specifier = ">=2.12,<3" },
-    { name = "pyyaml", marker = "extra == 'airbyte-shim'", specifier = ">=6.0.1" },
-    { name = "requests", marker = "extra == 'airbyte-shim'" },
-    { name = "requests-cache", marker = "extra == 'airbyte-shim'" },
     { name = "stream-unzip", specifier = "==0.0.101" },
     { name = "typing-extensions", specifier = ">=4.13,<5.0" },
     { name = "xxhash", specifier = ">=4.0.2,<5.0.0" },
 ]
 provides-extras = ["airbyte-shim"]
+
+[[package]]
+name = "estuary-cdk-airbyte-shim"
+version = "0.2.0"
+source = { editable = "estuary-cdk/vendor" }
+dependencies = [
+    { name = "backoff" },
+    { name = "dpath" },
+    { name = "jsonref" },
+    { name = "jsonschema" },
+    { name = "pendulum" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "requests-cache" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "backoff" },
+    { name = "dpath", specifier = ">=2.1,<3.0" },
+    { name = "jsonref", specifier = ">=1.1,<2.0" },
+    { name = "jsonschema", specifier = ">=4,<5" },
+    { name = "pendulum", specifier = ">=3,<4" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pyyaml", specifier = ">=6.0.1" },
+    { name = "requests" },
+    { name = "requests-cache" },
+]
 
 [[package]]
 name = "freezegun"
