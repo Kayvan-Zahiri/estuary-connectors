@@ -106,20 +106,19 @@ class _AsyncByteReader(aiocsv.protocols.WithAsyncRead):
         if self._exhausted:
             return ""
 
-        try:
-            chunk = await self.byte_gen.__anext__()
-            # Use incremental decoder to handle multi-byte characters
-            # that may be split across chunk boundaries.
-            return self.decoder.decode(chunk, final=False)
+        while True:
+            try:
+                chunk = await self.byte_gen.__anext__()
+            except StopAsyncIteration:
+                self._exhausted = True
+                # Finalization still rejects an incomplete encoded character.
+                return self.decoder.decode(b'', final=True)
 
-        except StopAsyncIteration:
-            self._exhausted = True
+            decoded = self.decoder.decode(chunk, final=False)
+            if decoded:
+                return decoded
+            # An empty chunk or a buffered character/BOM is not end-of-file.
 
-            # Finalize the decoder to get any remaining characters.
-            # This will raise UnicodeDecodeError if there are incomplete characters.
-            final_chunk = self.decoder.decode(b'', final=True)
-
-            return final_chunk if final_chunk else ""
 
 
 class IncrementalCSVProcessor(Generic[T]):

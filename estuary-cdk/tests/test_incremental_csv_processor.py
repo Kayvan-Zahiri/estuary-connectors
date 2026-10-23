@@ -614,3 +614,61 @@ class TestIncrementalCSVRowProcessor:
         """Parse errors still surface as CSVProcessingError."""
         with pytest.raises(CSVProcessingError, match="Failed to parse CSV data"):
             await self.collect('a,"unclosed,b\nc,d', config=CSVConfig(strict=True))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16"])
+@pytest.mark.parametrize("positional", [False, True])
+async def test_decoder_only_chunks_do_not_end_csv(encoding, positional):
+    text = "名前,city\n日本語,Zürich\nnext,Paris\n"
+
+    async def chunks():
+        for byte in text.encode(encoding):
+            yield bytes([byte])
+
+    processor = IncrementalCSVRowProcessor if positional else IncrementalCSVProcessor
+    result = [row async for row in processor(chunks(), config=CSVConfig(encoding=encoding))]
+    expected = [["名前", "city"], ["日本語", "Zürich"], ["next", "Paris"]]
+    if not positional:
+        expected = [{"名前": "日本語", "city": "Zürich"}, {"名前": "next", "city": "Paris"}]
+    assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("positional", [False, True])
+async def test_empty_chunks_do_not_end_csv(positional):
+    async def chunks():
+        yield b""
+        yield b"name,city\n"
+        yield b""
+        yield b"first,Paris\n"
+        yield b""
+        yield b"next,Tokyo\n"
+
+    processor = IncrementalCSVRowProcessor if positional else IncrementalCSVProcessor
+    result = [row async for row in processor(chunks())]
+    expected = [["name", "city"], ["first", "Paris"], ["next", "Tokyo"]]
+    if not positional:
+        expected = [{"name": "first", "city": "Paris"}, {"name": "next", "city": "Tokyo"}]
+    assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("processor", [IncrementalCSVProcessor, IncrementalCSVRowProcessor])
+async def test_incomplete_character_at_eof_still_raises(processor):
+    async def chunks():
+        yield b"name,city\n"
+        yield b"\xe6"
+
+    with pytest.raises(UnicodeDecodeError):
+        _ = [row async for row in processor(chunks())]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("processor", [IncrementalCSVProcessor, IncrementalCSVRowProcessor])
+async def test_only_empty_chunks_yield_no_rows(processor):
+    async def chunks():
+        yield b""
+        yield b""
+
+    assert [row async for row in processor(chunks())] == []
